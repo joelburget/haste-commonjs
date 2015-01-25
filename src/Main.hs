@@ -1,13 +1,18 @@
 module Main where
 
-import Text.ParserCombinators.Parsec
+import Text.Parsec hiding (Line)
 import Data.Monoid
 import Data.Functor
 import Data.Char (digitToInt)
 import Data.List
-import System.IO
+import Data.Text.Lazy hiding (unwords, map, concat, foldl')
+import Data.Text.Lazy.Builder
+import Data.Text.Lazy.IO (writeFile)
+import qualified Data.Text.Lazy.IO as T
 import System.Environment
 import System.Console.GetOpt
+
+import Prelude hiding (writeFile)
 
 import Parser
 import Printer
@@ -33,7 +38,7 @@ options = [
   Option ['j'] ["js-file"] (ReqArg (\s o -> o {jsFileName = Just s})      "FILE") "javascript file to output"
   ]
 
-main :: IO()
+main :: IO ()
 main = do
   args <- getArgs
   -- parse the arguments
@@ -46,23 +51,23 @@ main = do
   case opt of
     Options cFile (Just inFile) (Just hsFile) (Just jsFile)  -> do
       cString <- cFile
-      let convertTuples = read cString :: [(String,String,String,String)]
+      let convertTuples = read cString :: [(Text,Text,Text,Text)]
           convertData   = map (\(s1,s2,s3,s4) -> ConvertData s1 s2 s3 s4) convertTuples
       doParse convertData inFile hsFile jsFile
     _ -> error $ usageInfo usageHeader options
-    
+
 doParse :: ConvertMap -> String -> String ->String -> IO ()
 doParse cData inFile hsFile jsFile = do
-  contents <- readFile inFile
-  let lines = parse (parseFFIFile cData) inFile contents
+  contents <- T.readFile inFile
+  let lines = runParser parseFFIFile cData inFile contents
   case lines of
-    Right l  -> writeFilesOut hsFile jsFile l
-    Left p -> putStrLn $ "Error: " ++ (show p)
-    
-writeFilesOut :: String -> String -> [FFILine] -> IO ()
+    Right l -> writeFilesOut hsFile jsFile l
+    Left p  -> putStrLn $ "Error: " ++ (show p)
+
+writeFilesOut :: String -> String -> [Line] -> IO ()
 writeFilesOut hsFile jsFile lines = do
   putStrLn $ show lines
   let hsData = haskellFile lines
       jsData = javascriptFile lines
-  writeFile hsFile hsData
-  writeFile jsFile jsData
+  writeFile hsFile $ toLazyText hsData
+  writeFile jsFile $ toLazyText jsData

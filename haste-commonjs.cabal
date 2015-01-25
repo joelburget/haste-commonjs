@@ -1,17 +1,21 @@
-name:           haste-ffi-parser
+name:           haste-commonjs
 version:        0.1
 cabal-version:  >= 1.2
+category:       Web
 build-type:     Simple
-author:         ls
+author:         Joel Burget
+maintainer:     joelburget@gmail.com
 
 executable haste-ffi-parser
   hs-source-dirs:  src
   main-is:         Main.hs
-  build-depends:   
+  build-depends:
                    base >= 4,
-                   parsec
+                   parsec,
+                   text,
+                   text-format
   ghc-options:     -Wall
-  other-modules:   
+  other-modules:
                    Parser,
                    Printer
 

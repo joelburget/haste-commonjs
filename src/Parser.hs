@@ -1,202 +1,268 @@
+{-# LANGUAGE TupleSections, OverloadedStrings #-}
 
 module Parser where
 
-import Text.ParserCombinators.Parsec
+import Data.Foldable (asum)
 import Data.Functor
 import Data.Char (digitToInt)
 import Data.List (foldl', find)
-import Data.Maybe (catMaybes)
-import Data.Foldable (asum)
+import Data.Maybe (mapMaybe)
+import Data.Monoid
+import Data.String (fromString)
+import Data.Text.Lazy (Text, unpack)
+-- import Text.ParserCombinators.Parsec hiding (Line, Parser)
+import Text.Parsec hiding (Line, Parser)
+
+-- type Parser = GenParser Char ConvertMap
+type Parser = Parsec Text ConvertMap
+
+data ExportType
+    = ModuleExport
+    | NameExport Text
+    deriving (Eq, Show)
 
 -- Output data structure
-data FFILine = PlainLine String
-          | FFILine {
-            jsExp :: JSExpr,
-            hsName :: String,
-            cConstraints :: [ClassConstraint],
-            hsType :: Type
-            } deriving (Eq,Show)
+data Line
+    = PlainLine Text
+    | ImportLine {
+      jsExp :: JSExpr,
+      hsName :: Text,
+      cConstraints :: [ClassConstraint],
+      hsType :: Type
+    }
+    | ExportLine {
+      exType :: ExportType,
+      hsName :: Text,
+      hsType :: Type
+    }
+    deriving (Eq,Show)
 
 -- Type distinguishes between those types, that are important to us
 data Type = IOVoid
           | IOType Type
-          | PlainType String
+          | PlainType Text
           | ConvertType ConvertData -- a type that must be converted
           | FunctionType Type Type
           deriving (Eq,Show)
+
 -- class constraint in the type signature
 data ClassConstraint = ClassConstraint {
-     className  :: String,
-     parameters :: [String]
+     className  :: Text,
+     parameters :: [Text]
   } deriving (Eq,Show)
 
 data ConvertData = ConvertData {
-                     typeName        :: String,
-                     foreignTypeName :: String,
-                     toConvert       :: String,
-                     fromConvert     :: String}
-                   deriving(Eq,Show)
+    typeName        :: Text,
+    foreignTypeName :: Text,
+    toConvert       :: Text,
+    fromConvert     :: Text
+    }
+    deriving(Eq,Show)
 type ConvertMap = [ConvertData]
 
 type JSExpr = [JSExprPart]
-data JSExprPart = StringPart String | ArgumentPart Int | RestArgPart deriving (Eq,Show)
+data JSExprPart = StringPart Text | ArgumentPart Int | RestArgPart deriving (Eq,Show)
 
-parseFFIFile :: ConvertMap -> GenParser Char st [FFILine]
-parseFFIFile cm = endBy (line cm) eol
- 
-line :: ConvertMap -> GenParser Char st FFILine
-line cm = ffiLine cm <|> plainLine
+parseFFIFile :: Parser [Line]
+parseFFIFile = endBy line eol
 
-plainLine :: GenParser Char st FFILine
-plainLine = PlainLine <$> many (noneOf "\n")
+line :: Parser Line
+line = importLine <|> exportLine <|> plainLine
 
-whiteSpaces :: GenParser Char st String
-whiteSpaces = many $ (char ' ' <|> char '\t' <?> "Whitespace")
-whiteSpaces1 :: GenParser Char st String
-whiteSpaces1 = many1 $ (char ' ' <|> char '\t' <?> "Whitespace")
+plainLine :: Parser Line
+plainLine = PlainLine . fromString <$> many (noneOf "\n")
 
-ffiLine :: ConvertMap -> GenParser Char st FFILine
-ffiLine cm = do
+whiteSpaces :: Parser Text
+whiteSpaces = fromString <$> many (char ' ' <|> char '\t' <?> "Whitespace")
+
+whiteSpaces1 :: Parser Text
+whiteSpaces1 = fromString <$> many1 (char ' ' <|> char '\t' <?> "Whitespace")
+
+quoted :: Parser Text
+quoted = let qt = char '"' in between qt qt (fromString <$> manyTill anyChar qt)
+
+exportType :: Parser ExportType
+exportType = (ModuleExport <$ string "module")
+         <|> (NameExport <$> quoted)
+
+exportLine :: Parser Line
+exportLine = do
+    try $ do
+        string "foreign"
+        whiteSpaces1
+        string "export"
+        whiteSpaces1
+        string "commonjs"
+    exTy <- exportType
+    whiteSpaces1
+    hsName <- fromString <$> many1 (alphaNum <|> char '_')
+    whiteSpaces
+    string "::"
+    whiteSpaces
+    signature <- typeSignature
+    return $ ExportLine exTy hsName signature
+
+
+importLine :: Parser Line
+importLine = do
   try $ do
     string "foreign"
     whiteSpaces1
     string "import"
     whiteSpaces1
-    string "cpattern"
+    string "commonjs"
   whiteSpaces1
-  char '\"'
+  char '"'
   jsName <- jsExpr
-  char '\"'
+  char '"'
   whiteSpaces
-  hsName <- many1 (alphaNum <|> char '_')
+  hsName <- fromString <$> many1 (alphaNum <|> char '_')
   whiteSpaces
   string "::"
   whiteSpaces
-  (constraints,newCm) <- try (classConstraints cm) <|> return ([],cm)
+  (constraints, newCm) <- try classConstraints <|> (([],) <$> getState)
   whiteSpaces
-  signature <- typeSignature newCm
-  return $ FFILine jsName hsName constraints signature
+  cm <- getState
+  setState newCm
+  signature <- typeSignature
+  setState cm
+  return $ ImportLine jsName hsName constraints signature
 
-jsExpr :: GenParser Char st JSExpr
+jsExpr :: Parser JSExpr
 jsExpr = many1 jsExprPart
 
-jsExprPart :: GenParser Char st JSExprPart
+jsExprPart :: Parser JSExprPart
 jsExprPart = try jsExprArgPart <|> try jsExprRestArgPart <|> jsExprStringPart
 
-positiveNatural :: GenParser Char st Int
-positiveNatural = 
+positiveNatural :: Parser Int
+positiveNatural =
     foldl' (\a i -> a * 10 + digitToInt i) 0 <$> many1 digit
 
-jsExprArgPart :: GenParser Char st JSExprPart
+jsExprArgPart :: Parser JSExprPart
 jsExprArgPart = do
   char '%'
   n <- positiveNatural
   return $ ArgumentPart n
-  
-jsExprRestArgPart :: GenParser Char st JSExprPart
+
+jsExprRestArgPart :: Parser JSExprPart
 jsExprRestArgPart = string "%*" >> return RestArgPart
 
-jsExprStringPart :: GenParser Char st JSExprPart
-jsExprStringPart = StringPart <$> many1 (noneOf "\"%")
+jsExprStringPart :: Parser JSExprPart
+jsExprStringPart = StringPart . fromString <$> many1 (noneOf "\"%")
 
-typeSignature :: ConvertMap -> GenParser Char st Type
-typeSignature cm = try (functionType cm) <|> try (oneArgumentType cm)
+typeSignature :: Parser Type
+typeSignature = try functionType <|> try oneArgumentType
 
-oneArgumentType :: ConvertMap -> GenParser Char st Type
-oneArgumentType cm =
+oneArgumentType :: Parser Type
+oneArgumentType =
   try (do char '('
-          res <- typeSignature cm
+          res <- typeSignature
           char ')'
           return res)
-  <|> try (convertType cm)
+  <|> try convertType
   <|> try ioVoidType
-  <|> try (ioType cm)
+  <|> try ioType
   <|> try plainType
   <?> "Some haskell type"
-                  
-convertType :: ConvertMap -> GenParser Char st Type
-convertType cm = do
+
+convertType :: Parser Type
+convertType = do
   whiteSpaces
+  cm <- getState
   -- test if any of the types match (they are in fst cm)
-  r <- asum . map (\c -> do {string $ typeName c; return $ ConvertType c}) $ cm
+  r <- asum $ map
+      (\c -> do
+          string $ unpack $ typeName c
+          return $ ConvertType c
+      )
+      cm
   whiteSpaces
   return r
-  
-ioVoidType :: GenParser Char st Type
-ioVoidType = do
+
+ioHeader :: Parser ()
+ioHeader = do
   whiteSpaces
   string "IO"
   whiteSpaces
+  return ()
+
+ioVoidType :: Parser Type
+ioVoidType = do
+  ioHeader
   string "()"
   return IOVoid
-  
-ioType :: ConvertMap -> GenParser Char st Type
-ioType cm = do
-  whiteSpaces
-  string "IO"
-  whiteSpaces
-  r <- oneArgumentType cm
+
+ioType :: Parser Type
+ioType = do
+  ioHeader
+  r <- oneArgumentType
   whiteSpaces
   return $ IOType r
 
-plainType :: GenParser Char st Type
+plainType :: Parser Type
 plainType = do
   whiteSpaces
   parts <- many1 plainTypePart
   whiteSpaces
-  return $ PlainType $ concat parts
+  return $ PlainType $ mconcat parts
 
-plainTypePart :: GenParser Char st String
-plainTypePart = do
-  try $ do char '('
-           parts <- many plainTypePart
-           char ')'
-           return $ "(" ++ (concat parts) ++ ")"
-  <|> many1 (alphaNum <|> char ' ')
+plainTypePart :: Parser Text
+plainTypePart =
+    try $ do char '('
+             parts <- many plainTypePart
+             char ')'
+             return $ "(" <> mconcat parts <> ")"
+    <|> (fromString <$> many1 (alphaNum <|> char ' '))
 
-functionType :: ConvertMap -> GenParser Char st Type
-functionType cm = do
+functionType :: Parser Type
+functionType = do
   whiteSpaces
-  t1 <- oneArgumentType cm
+  t1 <- oneArgumentType
   whiteSpaces
   string "->"
   whiteSpaces
-  t2 <- typeSignature cm
+  t2 <- typeSignature
   whiteSpaces
   return $ FunctionType t1 t2
-  
-classConstraints :: ConvertMap -> GenParser Char st ([ClassConstraint],ConvertMap)
-classConstraints cm = do
+
+classConstraints :: Parser ([ClassConstraint], ConvertMap)
+classConstraints = do
   cc <- try $ do c <- singleClassConstraint
                  return [c]
         <|> manyClassConstraints
   whiteSpaces
   string "=>"
+  cm <- getState
   -- find the class names in the convert map, and create appropriae new convert entries
   let singleParamConstraints = filter (\(ClassConstraint _ parameters) -> length parameters == 1) cc
       constrAppliesToConvertData constr convDat = typeName convDat == className constr
       makeConvDataWithClassConstr constr convData = convData {typeName = (head . parameters) constr}
-      newCM = catMaybes $ map (\constr ->(makeConvDataWithClassConstr constr) <$> (find (constrAppliesToConvertData constr) cm)) singleParamConstraints
-  return (cc,cm ++ newCM)
+      newCM = mapMaybe
+          (\constr ->
+              makeConvDataWithClassConstr constr <$>
+              find (constrAppliesToConvertData constr) cm
+          )
+          singleParamConstraints
+  return (cc, cm ++ newCM)
 
-singleClassConstraint :: GenParser Char st ClassConstraint
+singleClassConstraint :: Parser ClassConstraint
 singleClassConstraint = do
   whiteSpaces
   first <- upper
   rest  <- many alphaNum
-  let className = first:rest
+  let className = fromString $ first:rest
   whiteSpaces1
   names <- many1 nameInClassConstraint
   return $ ClassConstraint className names
 
-nameInClassConstraint :: GenParser Char st String
+nameInClassConstraint :: Parser Text
 nameInClassConstraint = do
   first <- lower
   rest  <- many alphaNum
   whiteSpaces
-  return (first:rest)
+  return $ fromString (first:rest)
 
-manyClassConstraints :: GenParser Char st [ClassConstraint]
+manyClassConstraints :: Parser [ClassConstraint]
 manyClassConstraints = do
   char '('
   whiteSpaces
@@ -204,6 +270,6 @@ manyClassConstraints = do
   char ')'
   return res
 
-  
+
 
 eol = char '\n' <?> "end of line"

@@ -8,7 +8,7 @@ Writing ffi bindings for the hastec haskell to javascript compiler can be annoyi
 In your hs file write:
 
 ```haskell
-foreign import cpattern "<js-expression>" hs-name :: Signature
+foreign import commonjs "<js-expression>" hs-name :: Signature
 ```
 
 Where <js-expression> is the javascript expression to be associated with the hs-name. When it contains "%N" (with N being a positive number), it is replaced with N-th parameter to the haskell function.
@@ -17,7 +17,7 @@ The hs-name is the name of the haskell function and Signature its signature.
 Example:
 
 ```haskell
-foreign import cpattern "%1.prob = %2" setProb :: Obj -> Prop -> IO ()
+foreign import commonjs "%1.prob = %2" setProb :: Obj -> Prop -> IO ()
 ```
 
 Now convert your has file with:
