@@ -32,10 +32,10 @@ defaultOptions = Options (return "[]") Nothing Nothing Nothing
 
 options :: [OptDescr (Options -> Options)]
 options = [
-  Option ['c'] ["convert"] (ReqArg (\s o -> o {convertFile = readFile s}) "FILE") "file with type definitinitions to convert",
-  Option ['i'] ["in"]      (ReqArg (\s o -> o {inFileName = Just s})      "FILE") "input file with ffi definition",
-  Option ['o'] ["out"]     (ReqArg (\s o -> o {hsFileName = Just s})      "FILE") "output haskell file",
-  Option ['j'] ["js-file"] (ReqArg (\s o -> o {jsFileName = Just s})      "FILE") "javascript file to output"
+  Option "c" ["convert"] (ReqArg (\s o -> o {convertFile = readFile s}) "FILE") "file with type definitinitions to convert",
+  Option "i" ["in"]      (ReqArg (\s o -> o {inFileName = Just s})      "FILE") "input file with ffi definition",
+  Option "o" ["out"]     (ReqArg (\s o -> o {hsFileName = Just s})      "FILE") "output haskell file",
+  Option "j" ["js-file"] (ReqArg (\s o -> o {jsFileName = Just s})      "FILE") "javascript file to output"
   ]
 
 main :: IO ()
@@ -62,11 +62,11 @@ doParse cData inFile hsFile jsFile = do
   let lines = runParser parseFFIFile cData inFile contents
   case lines of
     Right l -> writeFilesOut hsFile jsFile l
-    Left p  -> putStrLn $ "Error: " ++ (show p)
+    Left p  -> putStrLn $ "Error: " ++ show p
 
 writeFilesOut :: String -> String -> [Line] -> IO ()
 writeFilesOut hsFile jsFile lines = do
-  putStrLn $ show lines
+  print lines
   let hsData = haskellFile lines
       jsData = javascriptFile lines
   writeFile hsFile $ toLazyText hsData

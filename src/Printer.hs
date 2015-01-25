@@ -36,21 +36,21 @@ haskellLine (ImportLine _ hsName cConstr hsType) =
     -- return true of there is converion type with from conversion as result
     needsConversion t = case t of
       (IOType t')        -> needsConversion t'
-      (ConvertType dat)  -> if null (fromConvert dat) then False else True
+      (ConvertType dat)  -> not (null (fromConvert dat))
       (FunctionType a r) -> argNeedsConversion a || needsConversion r
       _                  -> False
     argNeedsConversion t = case t of
-      (ConvertType dat)  -> if null (toConvert dat) then False else True
+      (ConvertType dat)  -> not (null (toConvert dat))
       IOVoid             -> True
       (IOType _)         -> True
       (FunctionType _ _) -> True
       _                  -> False
     numArgs = numArgs' hsType
       where
-      numArgs' (FunctionType _ r) = 1 + (numArgs' r)
+      numArgs' (FunctionType _ r) = 1 + numArgs' r
       numArgs' _                  = 0
     argumentList :: Builder
-    argumentList = mconcat $ map (build " a{}" . Only) $ ([1..numArgs] :: [Int])
+    argumentList = mconcat $ map (build " a{}" . Only) ([1..numArgs] :: [Int])
     argumentListWithConversion :: Builder
     -- argumentListWithConversion = foldr (\x y -> x <> " " <> y) "" $ zipWith argumentConversion ([1..] :: [Int]) (argTypes hsType)
     argumentListWithConversion = mconcat $ intersperse " " $ zipWith argumentConversion ([1..] :: [Int]) (argTypes hsType)
@@ -73,7 +73,7 @@ haskellLine (ImportLine _ hsName cConstr hsType) =
 
 
     argTypeList :: Type -> Builder
-    argTypeList t = mconcat $ map (build "{} -> " . (Only . showArgType)) $ argTypes t
+    argTypeList t = mconcat $ map (build "{} -> " . Only . showArgType) $ argTypes t
     foreignSignature :: Type -> Builder
     {-cConstraintString classConstr = (className classConstr) ++ concatMap (\p -> ' ':p) (parameters classConstr)
     cConstraintsString
@@ -100,8 +100,8 @@ javascriptLine :: Line -> Builder
 javascriptLine (PlainLine _) = ""
 javascriptLine (ImportLine jsExp hsName cConstr hsType) =
     build "function {} ({}) { {} }" (name, args, body) where
-        name = (toForeignName hsName)
-        args = (argumentList $ length (argTypes hsType))
+        name = toForeignName hsName
+        args = argumentList $ length (argTypes hsType)
         body = if resultType hsType == IOVoid
                    then build "{}; return;" (Only jsCommand)
                    else build "return {};" (Only jsCommand)
@@ -115,10 +115,10 @@ javascriptLine (ImportLine jsExp hsName cConstr hsType) =
         restArguments :: [JSExprPart]
         restArguments = let argId (ArgumentPart i) = i
                             argId _ = 0
-                            highestArgument = maximum . map (argId) $ jsExp
+                            highestArgument = maximum $ map argId jsExp
                             numArguments = length (argTypes hsType)
                             missingArgs = if highestArgument >= numArguments then [] else [(highestArgument+1) .. numArguments]
-                        in map (\i -> ArgumentPart i) missingArgs
+                        in map ArgumentPart missingArgs
 javascriptLine (ExportLine ModuleExport name hsType) =
     build "module.exports = {};" (Only (toForeignName name))
 javascriptLine (ExportLine (NameExport jsName) hsName hsType) =
@@ -127,7 +127,7 @@ javascriptLine (ExportLine (NameExport jsName) hsName hsType) =
 -- helper functions
 argTypes :: Type -> [Type]
 argTypes t = case t of
-  FunctionType a r -> a:(argTypes r)
+  FunctionType a r -> a:argTypes r
   _                -> []
 
 resultType :: Type -> Type
