@@ -18,7 +18,7 @@ import Parser
 import Printer
 
 -- usage info
-usageHeader = "Usage: haste-ffi-parser"
+usageHeader = "Usage: haste-commonjs"
 
 -- Command line options
 data Options = Options {

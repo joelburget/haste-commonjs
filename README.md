@@ -1,9 +1,9 @@
-haste-ffi-parser
-================
+haste-commonjs
+==============
 
 Programm for easier writing ffi for the haste haskell to js compiler (and potentially also for other compilers in the future).
 
-Writing ffi bindings for the hastec haskell to javascript compiler can be annoying (see [haste ffi doc][1]). haste-ffi-parser allows writing ffi bindings similar as for uhc.
+Writing ffi bindings for the hastec haskell to javascript compiler can be annoying (see [haste ffi doc][1]). haste-commonjs allows writing ffi bindings similar as for uhc.
 
 In your hs file write:
 
@@ -23,7 +23,7 @@ foreign import commonjs "%1.prob = %2" setProb :: Obj -> Prop -> IO ()
 Now convert your has file with:
 
 ```bash
-haste-ffi-parser -i <source-file> -o <haskell-output-file> -j <javascript-output-file>
+haste-commonjs -i <source-file> -o <haskell-output-file> -j <javascript-output-file>
 ```
 
 This creates <haskell-output-file>.hs and <javascript-output-file>.js. The second one must be included in the haste build with --with-js.
@@ -50,7 +50,7 @@ For example, if you want to convert strings with "fromJS" and "toJS", your conve
 Now you run
 
 ```bash
-haste-ffi-parser -c <conversion-file> -i <source-file> -o <haskell-output-file> -j <javascript-output-file>
+haste-commonjs -c <conversion-file> -i <source-file> -o <haskell-output-file> -j <javascript-output-file>
 ```
 
 

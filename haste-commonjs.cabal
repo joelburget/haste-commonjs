@@ -6,7 +6,7 @@ build-type:     Simple
 author:         Joel Burget
 maintainer:     joelburget@gmail.com
 
-executable haste-ffi-parser
+executable haste-commonjs
   hs-source-dirs:  src
   main-is:         Main.hs
   build-depends:
