@@ -79,11 +79,13 @@ whiteSpaces1 :: Parser Text
 whiteSpaces1 = fromString <$> many1 (char ' ' <|> char '\t' <?> "Whitespace")
 
 quoted :: Parser Text
-quoted = let qt = char '"' in between qt qt (fromString <$> manyTill anyChar qt)
+-- quoted = let qt = char '"' in between qt qt (fromString <$> manyTill anyChar qt)
+quoted = let qt = char '"' in qt >> fromString <$> manyTill anyChar qt
 
 exportType :: Parser ExportType
 exportType = (ModuleExport <$ string "module")
          <|> (NameExport <$> quoted)
+         <?> "module or export name"
 
 exportLine :: Parser Line
 exportLine = do
@@ -93,6 +95,7 @@ exportLine = do
         string "export"
         whiteSpaces1
         string "commonjs"
+    whiteSpaces1
     exTy <- exportType
     whiteSpaces1
     hsName <- fromString <$> many1 (alphaNum <|> char '_')

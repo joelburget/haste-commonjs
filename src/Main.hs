@@ -66,7 +66,6 @@ doParse cData inFile hsFile jsFile = do
 
 writeFilesOut :: String -> String -> [Line] -> IO ()
 writeFilesOut hsFile jsFile lines = do
-  print lines
   let hsData = haskellFile lines
       jsData = javascriptFile lines
   writeFile hsFile $ toLazyText hsData

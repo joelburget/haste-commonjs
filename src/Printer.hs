@@ -23,74 +23,103 @@ haskellLine (PlainLine s) = fromLazyText s <> "\n"
 
 haskellLine (ImportLine _ hsName cConstr hsType) =
   if needsConversion hsType then
-    --expression with something that needs conversion
-    -- so output to lines, the foreign call with converted types, and the conversion function
+    -- expression with something that needs conversion
     build "foreign import ccall \"{}\" {}_With_CTypes :: {}\n{}{} = {}{}_With_CTypes{}\n"
-        (toForeignName hsName, hsName, foreignSignature hsType, hsName, argumentList, resultConversion, hsName, argumentListWithConversion)
+        -- javascript name of this symbol
+        ( toForeignName hsName
+
+        -- the name we're importing to hs
+        -- "name_With_CTypes :: ..."
+        , hsName
+        , foreignSignature hsType
+
+        -- definition of the converted function
+        -- "name arg1 arg2 = convert $ name_With_CTypes"
+        , hsName
+        , argumentList hsType
+        , resultConversion hsType
+        , hsName
+        , argumentListWithConversion hsType
+        )
   else
-    --expression without strings
-    build "foreign import ccall \"{}\" {} :: {}\n" (toForeignName hsName, hsName, foreignSignature hsType)
+    -- expression without strings
+    build "foreign import ccall \"{}\" {} :: {}\n"
+        ( toForeignName hsName
+        , hsName
+        , foreignSignature hsType
+        )
+
+haskellLine (ExportLine ModuleExport hsName hsTy) =
+    -- "export \"jsModule\" hsName\n"
+    "\n"
+haskellLine (ExportLine (NameExport jsName) hsName hsTy) =
+    "\n"
+
+-- return true if there is a IO or function type in the argument list
+-- return true if there is coversion type with to conversion in argument list
+-- return true of there is converion type with from conversion as result
+needsConversion :: Type -> Bool
+needsConversion (IOType t')        = needsConversion t'
+needsConversion (ConvertType dat)  = not (null (fromConvert dat))
+needsConversion (FunctionType a r) = argNeedsConversion a || needsConversion r
+needsConversion _                  = False
+
+argNeedsConversion :: Type -> Bool
+argNeedsConversion (ConvertType dat)  = not (null (toConvert dat))
+argNeedsConversion IOVoid             = True
+argNeedsConversion (IOType _)         = True
+argNeedsConversion (FunctionType _ _) = True
+argNeedsConversion _                  = False
+
+numArgs :: Type -> Int
+numArgs (FunctionType _ r) = 1 + numArgs r
+numArgs _                  = 0
+
+argumentList :: Type -> Builder
+argumentList ty = mconcat $ map (build " a{}" . Only) [1..numArgs ty]
+
+argumentListWithConversion :: Type -> Builder
+argumentListWithConversion ty =
+    mconcat $
+    intersperse " " $
+    zipWith argumentConversion [1..] (argTypes ty)
   where
-    -- return true if there is a IO or function type in the argument list
-    -- return true if there is coversion type with to conversion in argument list
-    -- return true of there is converion type with from conversion as result
-    needsConversion t = case t of
-      (IOType t')        -> needsConversion t'
-      (ConvertType dat)  -> not (null (fromConvert dat))
-      (FunctionType a r) -> argNeedsConversion a || needsConversion r
-      _                  -> False
-    argNeedsConversion t = case t of
-      (ConvertType dat)  -> not (null (toConvert dat))
-      IOVoid             -> True
-      (IOType _)         -> True
-      (FunctionType _ _) -> True
-      _                  -> False
-    numArgs = numArgs' hsType
-      where
-      numArgs' (FunctionType _ r) = 1 + numArgs' r
-      numArgs' _                  = 0
-    argumentList :: Builder
-    argumentList = mconcat $ map (build " a{}" . Only) ([1..numArgs] :: [Int])
-    argumentListWithConversion :: Builder
-    -- argumentListWithConversion = foldr (\x y -> x <> " " <> y) "" $ zipWith argumentConversion ([1..] :: [Int]) (argTypes hsType)
-    argumentListWithConversion = mconcat $ intersperse " " $ zipWith argumentConversion ([1..] :: [Int]) (argTypes hsType)
-      where
-      argumentConversion ident t = let name = build "a{}" (show ident) in case t of
-        (ConvertType dat)  -> if null (toConvert dat) then
-                                 name
-                              else
-                                 build "({} {})" (toConvert dat, name)
-        (FunctionType _ _) -> build "(mkCallback $ {})" (Only name)
-        IOVoid             -> build "(mkCallback $ {})" (Only name)
-        IOType _           -> build "(mkCallback $ {})" (Only name)
-        _                  -> name
-    resultConversion = resultConversion' (resultType hsType)
-      where
-      resultConversion' (ConvertType dat)
-          | null (fromConvert dat) = ""
-          | otherwise              = build "{} $ " (Only (fromConvert dat))
-      resultConversion' _ = ""
+  argumentConversion ident t = let name = build "a{}" (show ident) in case t of
+    (ConvertType dat)  -> if null (toConvert dat) then
+                             name
+                          else
+                             build "({} {})" (toConvert dat, name)
+    (FunctionType _ _) -> build "(mkCallback $ {})" (Only name)
+    IOVoid             -> build "(mkCallback $ {})" (Only name)
+    IOType _           -> build "(mkCallback $ {})" (Only name)
+    _                  -> name
+
+resultConversion :: Type -> Builder
+resultConversion ty = resultConversion' (resultType ty) where
+  resultConversion' (ConvertType dat)
+      | null (fromConvert dat) = ""
+      | otherwise              = build "{} $ " (Only (fromConvert dat))
+  resultConversion' _ = ""
 
 
-    argTypeList :: Type -> Builder
-    argTypeList t = mconcat $ map (build "{} -> " . Only . showArgType) $ argTypes t
-    foreignSignature :: Type -> Builder
-    {-cConstraintString classConstr = (className classConstr) ++ concatMap (\p -> ' ':p) (parameters classConstr)
-    cConstraintsString
-      | cConstr == [] = ""
-      | otherwise     = "(" ++ intercalate "," (map cConstraintString cConstr) ++ ") => "-}
-    foreignSignature t = {-cConstraintsString ++-} build "{} {}" (argTypeList t, showResType $ resultType t)
-    showArgType :: Type -> Builder
-    showArgType (ConvertType dat)   = fromLazyText $ foreignTypeName dat
-    showArgType IOVoid              = "JSFun (IO ())"
-    showArgType (IOType t)          = build "JSFun (IO ({}))" (Only (showArgType t))
-    showArgType (PlainType s)       = fromLazyText s
-    showArgType (FunctionType f r)  = build "JSFun ({})" (Only (foreignSignature (FunctionType f r)))
-    showResType :: Type -> Builder
-    showResType (ConvertType dat)   = fromLazyText $ foreignTypeName dat
-    showResType IOVoid              = "IO ()"
-    showResType (IOType t)          = build "IO ({})" (Only (showResType t))
-    showResType (PlainType s)       = fromLazyText s
+argTypeList :: Type -> Builder
+argTypeList t = mconcat $ map (build "{} -> " . Only . showArgType) $ argTypes t
+
+foreignSignature :: Type -> Builder
+foreignSignature t = build "{} {}" (argTypeList t, showResType $ resultType t)
+
+showArgType :: Type -> Builder
+showArgType (ConvertType dat)   = fromLazyText $ foreignTypeName dat
+showArgType IOVoid              = "JSFun (IO ())"
+showArgType (IOType t)          = build "JSFun (IO ({}))" (Only (showArgType t))
+showArgType (PlainType s)       = fromLazyText s
+showArgType (FunctionType f r)  = build "JSFun ({})" (Only (foreignSignature (FunctionType f r)))
+
+showResType :: Type -> Builder
+showResType (ConvertType dat)   = fromLazyText $ foreignTypeName dat
+showResType IOVoid              = "IO ()"
+showResType (IOType t)          = build "IO ({})" (Only (showResType t))
+showResType (PlainType s)       = fromLazyText s
 
 
 javascriptFile :: [Line] -> Builder
@@ -99,7 +128,7 @@ javascriptFile = mconcat . map javascriptLine
 javascriptLine :: Line -> Builder
 javascriptLine (PlainLine _) = ""
 javascriptLine (ImportLine jsExp hsName cConstr hsType) =
-    build "function {} ({}) { {} }" (name, args, body) where
+    build "function {} ({}) { {} }\n" (name, args, body) where
         name = toForeignName hsName
         args = argumentList $ length (argTypes hsType)
         body = if resultType hsType == IOVoid
@@ -119,10 +148,12 @@ javascriptLine (ImportLine jsExp hsName cConstr hsType) =
                             numArguments = length (argTypes hsType)
                             missingArgs = if highestArgument >= numArguments then [] else [(highestArgument+1) .. numArguments]
                         in map ArgumentPart missingArgs
+
 javascriptLine (ExportLine ModuleExport name hsType) =
-    build "module.exports = {};" (Only (toForeignName name))
+    build "module.exports = {};\n" (Only (toForeignName name))
+
 javascriptLine (ExportLine (NameExport jsName) hsName hsType) =
-    build "exports[{}] = {};" (jsName, toForeignName hsName)
+    build "exports[{}] = {};\n" (jsName, toForeignName hsName)
 
 -- helper functions
 argTypes :: Type -> [Type]
