@@ -1,72 +1,127 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
-import Text.Parsec hiding (Line)
+import Control.Exception
+import Control.Monad ((<=<), mzero)
+import Data.Aeson
+import qualified Data.ByteString.Lazy as BS
 import Data.Monoid
 import Data.Functor
 import Data.Char (digitToInt)
+import qualified Data.HashMap.Strict as H
 import Data.List
 import Data.Text.Lazy hiding (unwords, map, concat, foldl')
-import Data.Text.Lazy.Builder
+import Data.Text.Lazy.Builder (toLazyText)
 import Data.Text.Lazy.IO (writeFile)
 import qualified Data.Text.Lazy.IO as T
+import qualified Data.Vector as V
 import System.Environment
 import System.Console.GetOpt
+import System.IO.Error
+import System.Process
+import Text.Parsec hiding (Line)
 
 import Prelude hiding (writeFile)
 
 import Parser
 import Printer
 
--- usage info
-usageHeader = "Usage: haste-commonjs"
+data JsonStuff = JsonStuff
+    { conversions :: [ConvertData]
+    , stubs :: [Text]
+    , inFile :: Text
+    , out :: Text
+    }
 
--- Command line options
-data Options = Options {
-  convertFile :: IO String,
-  inFileName  :: Maybe String,
-  hsFileName  :: Maybe String,
-  jsFileName  :: Maybe String
-}
+anObject :: Value -> Maybe Object
+anObject (Object m) = Just m
+anObject _          = Nothing
 
-defaultOptions = Options (return "[]") Nothing Nothing Nothing
+anArray :: Value -> Maybe Array
+anArray (Array a) = Just a
+anArray _         = Nothing
 
-options :: [OptDescr (Options -> Options)]
-options = [
-  Option "c" ["convert"] (ReqArg (\s o -> o {convertFile = readFile s}) "FILE") "file with type definitinitions to convert",
-  Option "i" ["in"]      (ReqArg (\s o -> o {inFileName = Just s})      "FILE") "input file with ffi definition",
-  Option "o" ["out"]     (ReqArg (\s o -> o {hsFileName = Just s})      "FILE") "output haskell file",
-  Option "j" ["js-file"] (ReqArg (\s o -> o {jsFileName = Just s})      "FILE") "javascript file to output"
-  ]
+aString :: Value -> Maybe Text
+aString (String t) = Just (fromStrict t)
+aString _          = Nothing
 
-main :: IO ()
-main = do
-  args <- getArgs
-  -- parse the arguments
-  let (actions, nonOpt, msgs) = getOpt RequireOrder options args
-      opt = case getOpt RequireOrder options args of
-        (actions,[],[]) -> foldl' (flip ($)) defaultOptions actions
-        (_,nonOpts ,[]) -> error $ "unrecognized arguments: " ++ unwords nonOpts
-        (_,_,     msgs) -> error $ concat msgs ++ usageInfo usageHeader options
-  -- check the options
-  case opt of
-    Options cFile (Just inFile) (Just hsFile) (Just jsFile)  -> do
-      cString <- cFile
-      let convertTuples = read cString :: [(Text,Text,Text,Text)]
-          convertData   = map (\(s1,s2,s3,s4) -> ConvertData s1 s2 s3 s4) convertTuples
-      doParse convertData inFile hsFile jsFile
-    _ -> error $ usageInfo usageHeader options
+aConvertData :: Value -> Maybe ConvertData
+aConvertData (Object m) = do
+    a <- (aString <=< H.lookup "hsTy") m
+    b <- (aString <=< H.lookup "jsTy") m
+    c <- (aString <=< H.lookup "hsToJs") m
+    d <- (aString <=< H.lookup "jsToHs") m
+    return $ ConvertData a b c d
 
-doParse :: ConvertMap -> String -> String ->String -> IO ()
-doParse cData inFile hsFile jsFile = do
-  contents <- T.readFile inFile
-  let lines = runParser parseFFIFile cData inFile contents
-  case lines of
-    Right l -> writeFilesOut hsFile jsFile l
-    Left p  -> putStrLn $ "Error: " ++ show p
+instance FromJSON JsonStuff where
+    parseJSON (Object package) =
+        let maybeThing = do
+                options <- H.lookup "haste-options" package
+                options' <- anObject options
+
+                inFile <- (aString <=< H.lookup "in") options'
+                out <- aString (H.lookupDefault (String "out.js") "out" options')
+
+                stubs <- H.lookup "stubs" options'
+                stubs' <- anArray stubs
+                stubs'' <- sequence $ V.toList $ V.map aString stubs'
+
+                conversions <- H.lookup "conversions" options'
+                conversions' <- anArray conversions
+                conversions'' <- mapM aConvertData $ V.toList conversions'
+
+                return $ JsonStuff conversions'' stubs'' inFile out
+
+        in case maybeThing of
+               Just something -> return something
+               Nothing -> mzero
+    parseJSON _ = mzero
 
 writeFilesOut :: String -> String -> [Line] -> IO ()
 writeFilesOut hsFile jsFile lines = do
-  let hsData = haskellFile lines
-      jsData = javascriptFile lines
-  writeFile hsFile $ toLazyText hsData
-  writeFile jsFile $ toLazyText jsData
+    let hsData = haskellFile lines
+        jsData = javascriptFile lines
+    writeFile hsFile $ toLazyText hsData
+    writeFile jsFile $ toLazyText jsData
+
+main :: IO ()
+main = do
+    args <- getArgs
+
+    jsonBS <- BS.readFile "package.json" `catch`
+        (\e -> error $ if isDoesNotExistError e
+            then "Must be run in a directory with package.json"
+            else show e)
+
+    let jsonStuff :: Maybe JsonStuff
+        jsonStuff = decode' jsonBS
+
+    let jsonStuff' = case jsonStuff of
+            Nothing -> error "Couldn't parse package.json"
+            Just jsonStuff'' -> jsonStuff''
+        outFile = unpack $ out jsonStuff'
+        inFile' = unpack $ inFile jsonStuff'
+
+    contents <- T.readFile inFile'
+    let lines = runParser parseFFIFile (conversions jsonStuff') inFile' contents
+
+    putStrLn "writing intermediate files"
+    writeFilesOut "__preprocessed.hs" "__stubs.js" $ case lines of
+        Left msg -> error $ show msg
+        Right lines' -> lines'
+
+    -- hastec preprocessed.hs --with-js=Mainstub.js --with-js=hs-stubs.js --debug
+    putStrLn "calling hastec"
+    let stubLines = map ("--with-js=" ++) $
+            "__stubs.js":(map unpack (stubs jsonStuff'))
+    callProcess "hastec"
+        (["__preprocessed.hs"] ++ args ++ stubLines)
+
+    -- ./node_modules/.bin/browserify preprocessed.js -o mui.js
+    putStrLn "calling browserify"
+    callProcess "./node_modules/.bin/browserify"
+        ["__preprocessed.js", "-o", outFile]
+
+    -- sed -i '' -e's/var window = {}window;//' mui.js
+    callProcess "sed" ["-i", "''", "-e", "s/var window = {};//", outFile]
